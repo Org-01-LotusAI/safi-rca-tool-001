@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Optional
 
 try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass  # python-dotenv not installed, rely on shell env
+
+try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None  # type: ignore
@@ -120,6 +126,13 @@ def generate_repomap(repo_path: str, timeout: int = 120) -> str:
             text=True,
             timeout=timeout,
         )
+        # Clean up aider's chat history file if it was created
+        aider_history = Path(repo_path) / ".aider.chat.history.md"
+        if aider_history.exists():
+            try:
+                aider_history.unlink()
+            except Exception:
+                pass  # Best effort cleanup
         if result.returncode == 0:
             return result.stdout.strip()
         else:
@@ -303,6 +316,14 @@ def run_rca_analysis(
         result = json.loads(content)
 
         # Step 6: Validate post-execution working tree
+        # Clean up aider history file that may have been created during repo-map generation
+        aider_history = Path(repo_path) / ".aider.chat.history.md"
+        if aider_history.exists():
+            try:
+                aider_history.unlink()
+            except Exception:
+                pass  # Best effort cleanup
+
         git_status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=repo_path,
