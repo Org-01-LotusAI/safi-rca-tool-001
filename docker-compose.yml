@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  safi-rca:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - RCA_MODEL_NAME=${RCA_MODEL_NAME:-Nemotron 3 Ultra}
+      - RCA_API_BASE_URL=${RCA_API_BASE_URL:-https://api.openai.com/v1}
+      - RCA_API_KEY=${RCA_API_KEY}
+    volumes:
+      - .:/app
+    restart: unless-stopped
