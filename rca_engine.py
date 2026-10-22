@@ -12,9 +12,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -46,19 +47,75 @@ DEFAULT_CONFIG = RCAConfig(
 )
 
 
-def verify_and_prep_git(repo_path: str, sha: str) -> None:
+def _clone_repo_from_url(repo_url: str, target_dir: str) -> None:
+    """
+    Clone a Git repository from a URL to a target directory.
+
+    Args:
+        repo_url: The Git repository URL (https, ssh, etc.)
+        target_dir: Directory where the repo should be cloned.
+    """
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", repo_url, target_dir],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to clone repository from '{repo_url}': {result.stderr}")
+
+
+def _is_git_url(path: str) -> bool:
+    """Check if the given path looks like a Git remote URL."""
+    # Check for standard Git URL protocols
+    if path.startswith("http://") or path.startswith("https://") or \
+       path.startswith("git://") or path.startswith("git+") or \
+       "@" in path and (path.startswith("ssh://") or path.startswith("git@")) or \
+       path.startswith("file://"):
+        return True
+    # Also accept URLs with single slash after protocol (e.g., https:/host)
+    # Normalize by checking if it starts with a protocol followed by :
+    import re
+    # Match patterns like http:/, https:/, git:/, file:/
+    if re.match(r'^[a-zA-Z+]+:/', path):
+        return True
+    return False
+
+
+def verify_and_prep_git(repo_path: str, sha: str) -> Tuple[str, bool]:
     """
     Validate that repo_path is a Git work tree, checkout the exact SHA,
     and assert that the working tree is clean before starting.
 
+    Supports both local Git repository paths and Git remote URLs.
+    If a URL is provided, the repo will be cloned to a temporary directory
+    and that directory will be returned (caller is responsible for cleanup).
+
     Args:
-        repo_path: Path to the Git repository.
+        repo_path: Path to the Git repository or Git remote URL.
         sha: Exact Git commit SHA to checkout.
 
+    Returns:
+        Tuple of (repo_path_or_clone_dir, was_cloned_from_url)
+
     Raises:
-        RuntimeError: If repo_path is not a Git work tree, checkout fails,
+        RuntimeError: If the repo cannot be set up, checkout fails,
                       or working tree is dirty.
     """
+    was_cloned = False
+    repo_url = None
+
+    # Check if input is a Git URL that needs cloning
+    if _is_git_url(repo_path):
+        # Create a temporary directory for the cloned repo
+        tmp_dir = tempfile.mkdtemp(prefix="safi_rca_")
+        try:
+            _clone_repo_from_url(repo_path, tmp_dir)
+        except RuntimeError as e:
+            raise e
+        repo_path = tmp_dir
+        was_cloned = True
+        repo_url = repo_path  # Save original URL for cleanup tracking
+
     repo_path = os.path.abspath(repo_path)
 
     # Check if it's a Git work tree
@@ -69,6 +126,9 @@ def verify_and_prep_git(repo_path: str, sha: str) -> None:
         text=True,
     )
     if result.returncode != 0 or result.stdout.strip() != "true":
+        # If we cloned from a URL, clean up
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise RuntimeError(f"Path '{repo_path}' is not a valid Git work tree.")
 
     # Check working tree is clean BEFORE checkout
@@ -79,6 +139,9 @@ def verify_and_prep_git(repo_path: str, sha: str) -> None:
         text=True,
     )
     if result.stdout.strip():
+        # If we cloned from a URL, clean up before raising
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise RuntimeError(
             f"Working tree at '{repo_path}' is not clean before checkout. "
             f"Please commit or stash changes first.\n{result.stdout}"
@@ -92,6 +155,9 @@ def verify_and_prep_git(repo_path: str, sha: str) -> None:
         text=True,
     )
     if result.returncode != 0:
+        # If we cloned from a URL, clean up before raising
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise RuntimeError(f"Failed to checkout SHA '{sha}': {result.stderr}")
 
     # Verify working tree is clean AFTER checkout
@@ -102,9 +168,14 @@ def verify_and_prep_git(repo_path: str, sha: str) -> None:
         text=True,
     )
     if result.stdout.strip():
+        # If we cloned from a URL, clean up before raising
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise RuntimeError(
             f"Working tree at '{repo_path}' is not clean after checkout of '{sha}'.\n{result.stdout}"
         )
+
+    return repo_path, was_cloned
 
 
 def generate_repomap(repo_path: str, timeout: int = 120) -> str:
@@ -254,7 +325,7 @@ def run_rca_analysis(
     Run the full RCA analysis pipeline.
 
     Args:
-        repo_path: Path to the Git repository.
+        repo_path: Path to the Git repository or Git remote URL.
         sha: Exact Git commit SHA to analyze.
         evidence: Failure evidence text (logs, stack traces, etc.).
         sow_content: Optional Statement of Work content.
@@ -270,10 +341,9 @@ def run_rca_analysis(
     if config is None:
         config = DEFAULT_CONFIG
 
-    repo_path = os.path.abspath(repo_path)
-
-    # Step 1: Verify and prep Git
-    verify_and_prep_git(repo_path, sha)
+    # Step 1: Verify and prep Git (supports both local paths and URLs)
+    # Returns (repo_path, was_cloned_from_url)
+    repo_path, was_cloned = verify_and_prep_git(repo_path, sha)
 
     try:
         # Step 2: Gather context
@@ -356,20 +426,22 @@ def run_rca_analysis(
         result["sha"] = sha
         result["role"] = "root-cause-analyzer"
 
+        # Clean up cloned repo if applicable
+        if was_cloned:
+            # Remove the temporary cloned repository
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
+
         return result
 
     except json.JSONDecodeError as e:
+        # Clean up cloned repo on error if applicable
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise RuntimeError(f"Invalid JSON response from LLM: {e}")
     except Exception as e:
-        # Ensure we reset on any error
-        try:
-            subprocess.run(
-                ["git", "reset", "--hard", sha],
-                cwd=repo_path,
-                capture_output=True,
-            )
-        except Exception:
-            pass
+        # Clean up cloned repo on any error
+        if was_cloned:
+            subprocess.run(["rm", "-rf", repo_path], capture_output=True)
         raise
 
 

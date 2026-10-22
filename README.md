@@ -21,6 +21,9 @@ export RCA_API_BASE_URL="https://your-endpoint/v1"
 export RCA_API_KEY="sk-..."
 
 # 3. Run CLI Analysis
+# Support for both local paths and Git remote URLs:
+#   - Local path: /path/to/repo
+#   - Git URL: https://github.com/username/repo.git or git@github.com:username/repo.git
 python rca_engine.py analyze \
   --repo /path/to/your/repo \
   --sha 8f51ab2d3c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8 \

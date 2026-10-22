@@ -48,7 +48,8 @@ def init_session_state() -> None:
                 "content": (
                     "👋 Welcome to the **SAFI Root Cause Analyzer**!\n\n"
                     "To get started, please provide the following in the sidebar:\n"
-                    "1. **Target Repo Path** - Path to your Git repository (e.g., `/path/to/repo`)\n"
+                    "1. **Target Repo URL or Path** - URL to a Git repository (e.g., `https://github.com/username/repo`) "
+                    "or local path (e.g., `/path/to/repo`)\n"
                     "2. **Exact Git SHA** - The commit hash to analyze (e.g., `8f51ab2`)\n"
                     "3. **Failure Evidence** - Upload a `.txt` or `.log` file with error traces\n"
                     "4. **Statement of Work** *(optional)* - Upload a `.md` file with requirements\n\n"
@@ -254,7 +255,7 @@ def run_analysis() -> None:
 
     # Validation
     if not repo_path:
-        st.error("Please provide a Target Repo Path.")
+        st.error("Please provide a Target Repo URL or Path.")
         return
     if not sha:
         st.error("Please provide an Exact Git SHA.")
@@ -262,6 +263,12 @@ def run_analysis() -> None:
     if evidence_file is None:
         st.error("Please upload a Failure Evidence file.")
         return
+
+    # Normalize Git URL: convert https:/ to https://
+    if repo_path.startswith("https:/") and not repo_path.startswith("https://"):
+        repo_path = "https://" + repo_path[7:]
+    if repo_path.startswith("http:/") and not repo_path.startswith("http://"):
+        repo_path = "http://" + repo_path[6:]
 
     # Read file contents
     evidence = read_uploaded_file(evidence_file)
@@ -309,10 +316,10 @@ def main() -> None:
         st.header("🔧 Analysis Configuration")
 
         st.text_input(
-            "Target Repo Path",
-            placeholder="/path/to/repo",
+            "Target Repo URL or Path",
+            placeholder="https://github.com/username/repo or /path/to/repo",
             key="repo_path",
-            help="Absolute path to the Git repository to analyze",
+            help="URL to a Git repository or local path to a Git work tree",
         )
 
         st.text_input(
