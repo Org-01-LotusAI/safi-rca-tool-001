@@ -25,3 +25,7 @@ htmlcov/
 *.log
 rca_report_*.json
 failure.txt
+
+# Streamlit secrets
+.streamlit/secrets.toml
+.streamlit/secrets/
